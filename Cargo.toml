@@ -5,5 +5,8 @@ authors = ["Aiden McClelland <gagglehoof@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-clingo = "0.4.0"
+clingo = "0.4"
 failure = "0.1"
+serde = "1.0"
+serde_cbor = "0.9"
+serde_derive = "1.0"

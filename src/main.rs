@@ -1,17 +1,32 @@
 #![feature(slice_concat_ext)]
+
 #[macro_use]
 extern crate failure;
+#[macro_use]
+extern crate serde_derive;
 
 use failure::Error;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{stdin, BufRead, BufReader, Write};
+use std::io::stdin;
 use std::slice::SliceConcatExt;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
 
-type Memories = Vec<String>;
+#[derive(Deserialize, Serialize)]
+struct Memories {
+    pub rules: Vec<String>,
+    pub terms: Vec<String>,
+}
+impl Memories {
+    pub fn new() -> Self {
+        Memories {
+            rules: Vec::new(),
+            terms: Vec::new(),
+        }
+    }
+}
 
 enum Command {
     None,
@@ -20,18 +35,18 @@ enum Command {
 }
 
 fn main() -> Result<(), Error> {
-    let file = File::open("memories.lp").or_else(|_| File::create("memories.lp"))?;
-    let mem = BufReader::new(file)
-        .lines()
-        .collect::<Result<Memories, _>>()?;
-    let mut file = File::open("memories.lp")?;
+    let mem: Memories = File::open("memories.cbor")
+        .map_err(Error::from)
+        .and_then(|f| serde_cbor::from_reader(f).map_err(Error::from))
+        .or_else(|_| Ok::<Memories, Error>(Memories::new()))?;
 
     let mem_tex = Arc::new((Mutex::new(mem), Condvar::new()));
     let save_tex = mem_tex.clone();
     std::thread::spawn(move || -> Result<(), Error> {
         loop {
             let mem_lock = save_tex.1.wait(save_tex.0.lock().unwrap()).unwrap();
-            file.write(&mem_lock.join("\n").as_bytes())?;
+            let mut file = File::create("memories.cbor")?;
+            serde_cbor::to_writer(&mut file, &*mem_lock)?;
         }
     });
     println!("Hello!");
@@ -59,6 +74,10 @@ fn main() -> Result<(), Error> {
                 words = String::new();
                 continue;
             }
+            if words == "exit" {
+                println!("Goodbye!");
+                std::process::abort();
+            }
         }
         match command {
             Command::Details(_) => {
@@ -74,17 +93,15 @@ fn main() -> Result<(), Error> {
             Command::Details(a) => {
                 let memory = mem_tex.0.lock().unwrap();
                 let mut ctl = clingo::Control::new(Vec::new())?;
-                let mut prog = memory.join("\n");
+                let mut prog = memory.rules.join("\n");
                 drop(memory);
                 prog += &format!("\n{}(1).", a);
                 println!("Hmmm...");
                 ctl.add("base", &[], &prog)?;
                 ctl.ground(&[clingo::Part::new("base", &[])?])?;
-                // eprintln!("Grounded.");
                 let mut handle = ctl.solve(clingo::SolveMode::YIELD, &[])?;
                 let mut set_vec: Vec<HashSet<String>> = Vec::new();
                 loop {
-                    // eprintln!("Solving...");
                     let res = handle.model()?;
                     if let Some(model) = res {
                         set_vec.push(
@@ -117,10 +134,33 @@ fn main() -> Result<(), Error> {
                     println!("I don't know anything about {}.", a);
                 }
                 for item in all_set {
-                    println!("All {} is {}.", a, item);
+                    println!("All {} are {}.", a, item);
                 }
                 for item in some_set {
-                    println!("Some {} is {}.", a, item);
+                    println!("Some {} are {}.", a, item);
+                }
+            }
+            Command::Implies(a, b) => {
+                let mut memory = mem_tex.0.lock().unwrap();
+                let mut ctl = clingo::Control::new(Vec::new())?;
+                let mut prog = memory.rules.join("\n");
+                let rule_to_add = format!("{}(A) :- {}(A).", b, a);
+                prog += &format!("\n{}", rule_to_add);
+                for (i, term) in memory.terms.iter().enumerate() {
+                    prog += &format!("\n{}({}).", term, i);
+                }
+                println!("Hmmm...");
+                ctl.add("base", &[], &prog)?;
+                ctl.ground(&[clingo::Part::new("base", &[])?])?;
+                let mut handle = ctl.solve(clingo::SolveMode::YIELD, &[])?;
+                let res = handle.get()?;
+                if !res.contains(clingo::SolveResult::SATISFIABLE) {
+                    println!("That doesn't seem right...");
+                // TODO remove a rule
+                } else {
+                    println!("Ok!");
+                    memory.rules.push(rule_to_add);
+                    mem_tex.1.notify_all();
                 }
             }
             _ => (),
