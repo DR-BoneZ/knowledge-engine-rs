@@ -1,0 +1,9 @@
+[package]
+name = "knowledge-engine-rs"
+version = "0.1.0"
+authors = ["Aiden McClelland <gagglehoof@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+clingo = "0.4.0"
+failure = "0.1"
