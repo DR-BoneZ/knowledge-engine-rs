@@ -145,7 +145,7 @@ fn main() -> Result<(), Error> {
             Command::Details(a) => {
                 let a = a.to_plural();
                 let memory = mem_tex.0.lock().unwrap();
-                let mut ctl = clingo::Control::new(vec!["-n 0"])?;
+                let mut ctl = clingo::Control::new(vec!["-n 0".to_owned()])?;
                 let mut prog = memory.rules.join("\n");
                 drop(memory);
                 prog += &format!("\n{}(1).", a);
