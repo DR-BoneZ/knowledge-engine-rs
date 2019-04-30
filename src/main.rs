@@ -3,16 +3,25 @@
 #[macro_use]
 extern crate failure;
 #[macro_use]
+extern crate pest_derive;
+#[macro_use]
 extern crate serde_derive;
 
 use failure::Error;
-use std::collections::HashSet;
+use inflector::Inflector;
+use pest::Parser;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::stdin;
 use std::slice::SliceConcatExt;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
+
+
+#[derive(Parser)]
+#[grammar = "commands.pest"]
+struct CmdParser;
 
 #[derive(Deserialize, Serialize)]
 struct Memories {
@@ -30,9 +39,22 @@ impl Memories {
 
 enum Command {
     None,
-    Implies(String, String),
+    AddRule(String),
     Details(String),
 }
+
+// fn conj_be_for(mem: &Memories, word: &str) -> &'static str {
+//     if mem
+//         .terms
+//         .get(word)
+//         .cloned()
+//         .unwrap_or_else(|| word.to_singular() != word)
+//     {
+//         "are"
+//     } else {
+//         "is"
+//     }
+// }
 
 fn main() -> Result<(), Error> {
     let mem: Memories = File::open("memories.cbor")
@@ -57,40 +79,71 @@ fn main() -> Result<(), Error> {
         stdin().read_line(&mut user_input)?;
 
         user_input.make_ascii_lowercase();
-        let mut words = String::new();
         let mut command = Command::None;
-        for word in user_input.split_whitespace() {
-            if word == "is" || word == "are" {
-                command = Command::Implies(words, String::new());
-                words = String::new();
-                continue;
+        let pairs = CmdParser::parse(Rule::command, &user_input)
+            .map(|p| p.collect::<Vec<_>>())
+            .map_err(|e| println!("{}", e))
+            .unwrap_or_else(|_| Vec::new())
+            .get(0)
+            .cloned()
+            .map(|p| p.into_inner().collect::<Vec<_>>())
+            .unwrap_or_else(|| Vec::new());
+        if let Some(p) = pairs.get(0) {
+            match p.as_rule() {
+                Rule::details => {
+                    let inner = p.clone().into_inner().collect::<Vec<_>>();
+                    command = Command::Details(inner.get(0).unwrap().as_str().to_owned())
+                }
+                Rule::implies => {
+                    let mut inner = p.clone().into_inner().collect::<Vec<_>>();
+                    let car = inner.get(0).unwrap().clone();
+                    let choice_rule = if car.as_rule() == Rule::quantifier {
+                        inner.remove(0);
+                        car.into_inner().next().unwrap().as_rule() == Rule::some
+                    } else {
+                        false
+                    };
+                    let term = inner.get(0).unwrap().clone().as_str();
+                    let mut cadr = inner
+                        .get(1)
+                        .unwrap()
+                        .clone()
+                        .into_inner()
+                        .collect::<Vec<_>>();
+                    let caadr = cadr.get(0).unwrap();
+                    let neg = if caadr.as_rule() == Rule::not {
+                        cadr.remove(0);
+                        true
+                    } else {
+                        false
+                    };
+                    let expr = cadr.get(0).unwrap().as_str();
+                    let mut mem = mem_tex.0.lock().unwrap();
+                    mem.terms.push(term.to_owned());
+                    mem.terms.push(expr.to_owned());
+                    drop(mem);
+                    mem_tex.1.notify_all();
+                    command = Command::AddRule(if neg {
+                        format!(":- {}(A), {}(A).", term, expr)
+                    } else {
+                        if choice_rule {
+                            format!("0 {{ {}(A) }} 1 :- {}(A).", expr, term)
+                        } else {
+                            format!("{}(A) :- {}(A).", expr, term)
+                        }
+                    });
+                }
+                Rule::exit => {
+                    println!("Goodbye!");
+                    std::process::exit(0);
+                }
+                _ => (),
             }
-            if words.len() > 0 {
-                words += "_";
-            }
-            words += word;
-            if words == "tell_me_about" {
-                command = Command::Details(String::new());
-                words = String::new();
-                continue;
-            }
-            if words == "exit" {
-                println!("Goodbye!");
-                std::process::abort();
-            }
-        }
-        match command {
-            Command::Details(_) => {
-                command = Command::Details(words);
-            }
-            Command::Implies(a, _) => {
-                command = Command::Implies(a, words);
-            }
-            _ => (),
         }
 
         match command {
             Command::Details(a) => {
+                let a = a.to_plural();
                 let memory = mem_tex.0.lock().unwrap();
                 let mut ctl = clingo::Control::new(Vec::new())?;
                 let mut prog = memory.rules.join("\n");
@@ -140,11 +193,10 @@ fn main() -> Result<(), Error> {
                     println!("Some {} are {}.", a, item);
                 }
             }
-            Command::Implies(a, b) => {
+            Command::AddRule(rule_to_add) => {
                 let mut memory = mem_tex.0.lock().unwrap();
                 let mut ctl = clingo::Control::new(Vec::new())?;
                 let mut prog = memory.rules.join("\n");
-                let rule_to_add = format!("{}(A) :- {}(A).", b, a);
                 prog += &format!("\n{}", rule_to_add);
                 for (i, term) in memory.terms.iter().enumerate() {
                     prog += &format!("\n{}({}).", term, i);
@@ -162,6 +214,9 @@ fn main() -> Result<(), Error> {
                     memory.rules.push(rule_to_add);
                     mem_tex.1.notify_all();
                 }
+            }
+            Command::None => {
+                println!("I didn't understand that.");
             }
             _ => (),
         }

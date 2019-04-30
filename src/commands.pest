@@ -1,0 +1,16 @@
+
+are = _{ "are" | "is" }
+period = _{ "." | "!" }
+some = @{ "some" }
+all = @{ "all" }
+not = @{ "not" | "never" }
+tell_me_about = _{ "tell" ~ "me" ~ "about" }
+exit = { "exit" | ("bye" ~ period) | ("goodbye" ~ period) }
+quantifier = { some | all }
+implies = { quantifier? ~ term ~ are ~ expr ~ period? }
+details = { tell_me_about ~ term ~ period? }
+expr = { not? ~ term }
+term = @{ ('a'..'z')+ }
+command = { implies | details | exit }
+
+WHITESPACE = _{ " " }
